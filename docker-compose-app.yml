@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    container_name: phim-hot-app
+    ports:
+      - "3000:3000"
+    environment:
+      - DB_HOST=host.docker.internal
+      - DB_PORT=5432
+      - DB_NAME=demo
+      - DB_USER=postgres
+      - DB_PASSWORD=thang2004
+      - PORT=3000
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Phim Mới Ra - Danh Sách Phim Đang Chiếu</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <nav class="nav-menu">
+          <a href="index.html" class="nav-link">Phim Hot</a>
+          <a href="new-movies.html" class="nav-link active">Phim Mới Ra</a>
+        </nav>
+        <h1>Phim Mới Ra</h1>
+        <p class="subtitle">Khám phá những bộ phim đang chiếu tại rạp</p>
+      </header>
+
+      <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <p>Đang tải danh sách phim...</p>
+      </div>
+
+      <div class="error" id="error" style="display: none">
+        <p>Không thể tải danh sách phim. Vui lòng thử lại sau.</p>
+      </div>
+
+      <div class="movies-grid" id="moviesGrid"></div>
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+</html>
