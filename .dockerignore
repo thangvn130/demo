@@ -7,10 +7,17 @@ npm-debug.log
 .gitignore
 .DS_Store
 *.log
+logs/
 .vscode
 HUONG_DAN_*.md
 Test.session.sql
 docker-compose.yml
+docker-compose-*.yml
 .dockerignore
 README.md
+MINIO_INTEGRATION.md
+__pycache__
+*.pyc
+plugins/
+config/
 

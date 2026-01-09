@@ -11,6 +11,10 @@ services:
       - DB_USER=postgres
       - DB_PASSWORD=thang2004
       - PORT=3000
+      - MINIO_ENDPOINT=host.docker.internal:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_USE_SSL=false
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -11,6 +11,14 @@ from airflow.models import Variable
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
+from minio_utils import (
+    save_json_to_minio,
+    read_json_from_minio,
+    download_and_save_image_to_minio,
+    save_etl_log_to_minio,
+    save_cached_api_response_to_minio,
+)
+
 
 def _get_tmdb_api_key() -> str:
     api_key = os.getenv("TMDB_API_KEY") or Variable.get("TMDB_API_KEY", default_var=None)
@@ -40,6 +48,8 @@ def fetch_new_movies(**context) -> List[Dict[str, Any]]:
     params = {"api_key": api_key, "language": "vi-VN", "page": 1}
 
     all_results: List[Dict[str, Any]] = []
+    all_pages_data: List[Dict[str, Any]] = []
+    
     for page in (1, 2):
         params["page"] = page
         resp = requests.get(url, params=params, timeout=30)
@@ -48,15 +58,31 @@ def fetch_new_movies(**context) -> List[Dict[str, Any]]:
         data = resp.json()
         results = data.get("results", [])
         all_results.extend(results)
+        all_pages_data.append(data)
 
     if not all_results:
         raise AirflowException("TMDB now_playing trả về rỗng.")
 
+    # Lưu raw JSON vào MinIO (ý tưởng #2: media pipeline)
+    run_date = context.get("ds", datetime.now().strftime("%Y-%m-%d"))
+    raw_json_key = f"raw/tmdb/now_playing/{run_date}/movies.json"
+    try:
+        save_json_to_minio("movies-assets", raw_json_key, all_pages_data)
+        print(f"✅ Đã lưu raw JSON vào MinIO: {raw_json_key}")
+    except Exception as e:
+        print(f"⚠️ Lỗi khi lưu raw JSON vào MinIO: {e}")
+
     context["ti"].xcom_push(key="movies_raw", value=all_results)
+    context["ti"].xcom_push(key="raw_json_key", value=raw_json_key)
     return all_results
 
 
 def transform_movies(**context) -> Tuple[List[Dict[str, Any]], List[Tuple[int, int]]]:
+    # Có thể đọc từ MinIO nếu cần (từ raw JSON đã lưu)
+    # raw_json_key = context["ti"].xcom_pull(key="raw_json_key", task_ids="fetch_new_movies")
+    # if raw_json_key:
+    #     raw_data = read_json_from_minio("movies-assets", raw_json_key)
+    
     movies_raw = context["ti"].xcom_pull(key="movies_raw", task_ids="fetch_new_movies") or []
     genres = context["ti"].xcom_pull(key="genres", task_ids="fetch_genres") or []
 
@@ -68,12 +94,26 @@ def transform_movies(**context) -> Tuple[List[Dict[str, Any]], List[Tuple[int, i
         movie_id = mv.get("id")
         if not movie_id:
             continue
+        
+        poster_path = mv.get("poster_path") or ""
+        backdrop_path = mv.get("backdrop_path") or ""
+        
+        # Lưu đường dẫn MinIO thay vì đường dẫn TMDB
+        poster_minio_key = ""
+        backdrop_minio_key = ""
+        
+        if poster_path:
+            poster_minio_key = f"posters/{movie_id}{poster_path}"
+        if backdrop_path:
+            backdrop_minio_key = f"backdrops/{movie_id}{backdrop_path}"
+        
         movies_clean.append(
             {
                 "id": movie_id,
                 "title": mv.get("title"),
                 "overview": mv.get("overview") or "",
-                "poster_path": mv.get("poster_path") or "",
+                "poster_path": poster_minio_key,  # Lưu MinIO key thay vì TMDB path
+                "backdrop_path": backdrop_minio_key,
                 "release_date": mv.get("release_date") or None,
                 "vote_average": mv.get("vote_average") or 0,
                 "vote_count": mv.get("vote_count") or 0,
@@ -87,6 +127,43 @@ def transform_movies(**context) -> Tuple[List[Dict[str, Any]], List[Tuple[int, i
     context["ti"].xcom_push(key="movies_clean", value=movies_clean)
     context["ti"].xcom_push(key="movie_genres", value=movie_genres)
     return movies_clean, movie_genres
+
+
+def download_movie_images(**context):
+    """Tải và lưu ảnh poster, backdrop vào MinIO (ý tưởng #1)"""
+    movies_raw = context["ti"].xcom_pull(key="movies_raw", task_ids="fetch_new_movies") or []
+    
+    downloaded_count = 0
+    for mv in movies_raw:
+        movie_id = mv.get("id")
+        if not movie_id:
+            continue
+        
+        # Tải poster
+        poster_path = mv.get("poster_path")
+        if poster_path:
+            poster_key = f"posters/{movie_id}{poster_path}"
+            result = download_and_save_image_to_minio(
+                poster_path,
+                "movies-assets",
+                poster_key,
+            )
+            if result:
+                downloaded_count += 1
+        
+        # Tải backdrop
+        backdrop_path = mv.get("backdrop_path")
+        if backdrop_path:
+            backdrop_key = f"backdrops/{movie_id}{backdrop_path}"
+            download_and_save_image_to_minio(
+                backdrop_path,
+                "movies-assets",
+                backdrop_key,
+            )
+    
+    context["ti"].xcom_push(key="images_downloaded", value=downloaded_count)
+    print(f"✅ Đã tải {downloaded_count} ảnh vào MinIO")
+    return downloaded_count
 
 
 def upsert_movies(**context):
@@ -181,8 +258,47 @@ def upsert_movies(**context):
 
 
 def log_summary(**context):
+    """Lưu summary log vào MinIO (ý tưởng #4)"""
     count = context["ti"].xcom_pull(key="upsert_count", task_ids="upsert_movies") or 0
+    images_count = context["ti"].xcom_pull(key="images_downloaded", task_ids="download_movie_images") or 0
+    
+    dag_run = context.get("dag_run")
+    run_id = dag_run.run_id if dag_run else "manual"
+    dag_id = context.get("dag").dag_id if context.get("dag") else "fetch_new_movies"
+    
+    log_data = {
+        "movies_upserted": count,
+        "images_downloaded": images_count,
+        "status": "success",
+        "timestamp": datetime.now().isoformat(),
+    }
+    
+    try:
+        save_etl_log_to_minio("movies-assets", dag_id, run_id, log_data)
+        print(f"✅ Đã lưu ETL log vào MinIO")
+    except Exception as e:
+        print(f"⚠️ Lỗi khi lưu ETL log: {e}")
+    
     print(f"✅ Đã upsert {count} phim vào PostgreSQL.")
+    print(f"✅ Đã tải {images_count} ảnh vào MinIO.")
+
+
+def cache_api_response(**context):
+    """Cache API response vào MinIO (ý tưởng #3)"""
+    movies = context["ti"].xcom_pull(key="movies_clean", task_ids="transform_movies") or []
+    
+    if movies:
+        # Format giống response từ backend
+        response_data = {
+            "results": movies[:20],  # Cache top 20
+            "total": len(movies),
+        }
+        
+        try:
+            save_cached_api_response_to_minio("movies-assets", "new-movies", response_data)
+            print(f"✅ Đã cache API response vào MinIO")
+        except Exception as e:
+            print(f"⚠️ Lỗi khi cache API response: {e}")
 
 
 default_args = {
@@ -224,4 +340,14 @@ with DAG(
         python_callable=log_summary,
     )
 
-    t_genres >> t_fetch >> t_transform >> t_upsert >> t_log
+    t_download_images = PythonOperator(
+        task_id="download_movie_images",
+        python_callable=download_movie_images,
+    )
+
+    t_cache = PythonOperator(
+        task_id="cache_api_response",
+        python_callable=cache_api_response,
+    )
+
+    t_genres >> t_fetch >> [t_transform, t_download_images] >> t_upsert >> t_cache >> t_log

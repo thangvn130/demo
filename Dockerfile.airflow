@@ -1,0 +1,16 @@
+FROM apache/airflow:2.9.1
+
+USER root
+
+# Copy requirements file
+COPY requirements.txt /requirements.txt
+
+# Change ownership to airflow user
+RUN chown airflow:root /requirements.txt
+
+# Switch to airflow user for pip install
+USER airflow
+
+# Install Python packages as airflow user
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /requirements.txt

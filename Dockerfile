@@ -7,8 +7,8 @@ WORKDIR /app
 # Copy package.json và package-lock.json (nếu có)
 COPY package*.json ./
 
-# Cài đặt dependencies (npm ci nhanh hơn và đảm bảo build nhất quán khi có package-lock.json)
-RUN npm ci --omit=dev
+# Cài đặt dependencies
+RUN npm install --omit=dev
 
 # Stage 2: Production image
 FROM node:18-alpine
@@ -26,6 +26,7 @@ COPY --from=builder /app/node_modules ./node_modules
 # Copy toàn bộ source code
 COPY package*.json ./
 COPY server.js ./
+COPY minio-client.js ./
 COPY index.html ./
 COPY new-movies.html ./
 COPY style.css ./

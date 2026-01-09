@@ -2,6 +2,11 @@ const express = require("express");
 const { Pool } = require("pg");
 const cors = require("cors");
 require("dotenv").config();
+const {
+  getCachedApiResponse,
+  convertPosterPathToUrl,
+  ensureBucketExists,
+} = require("./minio-client");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,11 +34,29 @@ pool.on("error", (err) => {
   console.error("Lỗi kết nối PostgreSQL:", err);
 });
 
+// Khởi tạo MinIO bucket
+(async () => {
+  try {
+    await ensureBucketExists("movies-assets");
+    console.log("✅ MinIO bucket đã sẵn sàng");
+  } catch (error) {
+    console.error("⚠️ Lỗi khi khởi tạo MinIO bucket:", error);
+  }
+})();
+
 // API: Lấy danh sách phim hot
 app.get("/api/movies", async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 20;
     console.log(`Yêu cầu lấy ${limit} phim hot...`);
+    
+    // Kiểm tra cache từ MinIO (ý tưởng #3)
+    const cachedData = await getCachedApiResponse("movies");
+    if (cachedData) {
+      console.log("✅ Sử dụng cached data từ MinIO");
+      return res.json(cachedData);
+    }
+    
     console.log(`Kết nối database: ${process.env.DB_NAME || "demo"}`);
 
     // Thử query với genres trước, nếu lỗi thì dùng query đơn giản
@@ -82,20 +105,25 @@ app.get("/api/movies", async (req, res) => {
 
     console.log(`Tìm thấy ${result.rows.length} phim hot`);
 
-    // Format dữ liệu để tương thích với frontend
-    const movies = result.rows.map((row) => ({
-      id: row.id,
-      title: row.title,
-      overview: row.overview || "",
-      poster_path: row.poster_path || "",
-      release_date: row.release_date
-        ? row.release_date.toISOString().split("T")[0]
-        : null,
-      vote_average: parseFloat(row.vote_average) || 0,
-      vote_count: row.vote_count || 0,
-      popularity: parseFloat(row.popularity) || 0,
-      genres: row.genres || "",
-    }));
+    // Format dữ liệu và chuyển đổi poster_path sang pre-signed URL
+    const movies = await Promise.all(
+      result.rows.map(async (row) => {
+        const posterUrl = await convertPosterPathToUrl(row.poster_path);
+        return {
+          id: row.id,
+          title: row.title,
+          overview: row.overview || "",
+          poster_path: posterUrl || row.poster_path || "",
+          release_date: row.release_date
+            ? row.release_date.toISOString().split("T")[0]
+            : null,
+          vote_average: parseFloat(row.vote_average) || 0,
+          vote_count: row.vote_count || 0,
+          popularity: parseFloat(row.popularity) || 0,
+          genres: row.genres || "",
+        };
+      })
+    );
 
     res.json({
       results: movies,
@@ -116,6 +144,13 @@ app.get("/api/new-movies", async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 20;
     console.log(`Yêu cầu lấy ${limit} phim mới ra...`);
+    
+    // Kiểm tra cache từ MinIO (ý tưởng #3)
+    const cachedData = await getCachedApiResponse("new-movies");
+    if (cachedData) {
+      console.log("✅ Sử dụng cached data từ MinIO");
+      return res.json(cachedData);
+    }
 
     // Thử query với genres trước, nếu lỗi thì dùng query đơn giản
     let query = `
@@ -163,20 +198,25 @@ app.get("/api/new-movies", async (req, res) => {
 
     console.log(`Tìm thấy ${result.rows.length} phim mới ra`);
 
-    // Format dữ liệu để tương thích với frontend
-    const movies = result.rows.map((row) => ({
-      id: row.id,
-      title: row.title,
-      overview: row.overview || "",
-      poster_path: row.poster_path || "",
-      release_date: row.release_date
-        ? row.release_date.toISOString().split("T")[0]
-        : null,
-      vote_average: parseFloat(row.vote_average) || 0,
-      vote_count: row.vote_count || 0,
-      popularity: parseFloat(row.popularity) || 0,
-      genres: row.genres || "",
-    }));
+    // Format dữ liệu và chuyển đổi poster_path sang pre-signed URL
+    const movies = await Promise.all(
+      result.rows.map(async (row) => {
+        const posterUrl = await convertPosterPathToUrl(row.poster_path);
+        return {
+          id: row.id,
+          title: row.title,
+          overview: row.overview || "",
+          poster_path: posterUrl || row.poster_path || "",
+          release_date: row.release_date
+            ? row.release_date.toISOString().split("T")[0]
+            : null,
+          vote_average: parseFloat(row.vote_average) || 0,
+          vote_count: row.vote_count || 0,
+          popularity: parseFloat(row.popularity) || 0,
+          genres: row.genres || "",
+        };
+      })
+    );
 
     res.json({
       results: movies,
